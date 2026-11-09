@@ -1,6 +1,6 @@
-# Demo script: MDP vs ACI, click by click (about 12 minutes)
+# Demo script: MDP vs ACI, click by click (about 12 minutes, plus an optional 10-minute deep dive)
 
-Every click below was rehearsed in a browser on 9 November 2026, including starting the pipeline from the UI. That run took 3 minutes 39 seconds.
+Every click below was rehearsed in a browser on 9 November 2026, including starting the pipeline from the UI. The core run took 3 minutes 39 seconds; the deep-dive run took about 10 minutes.
 
 **Get your exact links first:** run `./scripts/demo-links.ps1`. It writes `DEMO-LINKS.local.md` (git-ignored) with a direct link for each scene.
 
@@ -12,7 +12,9 @@ Every click below was rehearsed in a browser on 9 November 2026, including start
 | 2 | ACI agent is online | Azure DevOps: **Organization settings** > **Agent pools** > `aci-selfhosted-demo` > **Agents** | `aci-agent-1`, **Online**, **Idle** |
 | 3 | MDP standby is ready | Azure portal: `mdp-security-demo` > **Settings** > **Agents** | One machine, **Status: Ready** (weekdays 08:00 to 18:00, Sydney time) |
 | 4 | Warm-up run | Do scene 4 once | All three stages green |
-| 5 | Open tabs | One tab per scene, from `DEMO-LINKS.local.md` | |
+| 5 | Deep-dive run (if you'll show scenes 6 to 10) | Scene 4, but also tick **Include deep-dive variants (ACI --once, MDP agent reuse, WIF deployment) - adds several minutes** | Six stages green, about 10 minutes |
+| 6 | Auditing is on (scene 10) | **Organization settings** > **Policies** > **Log audit events** | **On**, and **Auditing** appears under **General** |
+| 7 | Open tabs | One tab per scene, from `DEMO-LINKS.local.md` | |
 
 Outside the standby window, the first MDP job waits a few minutes for a machine. Show the warm-up run instead.
 
@@ -69,6 +71,44 @@ Outside the standby window, the first MDP job waits a few minutes for a machine.
 
 AKS: the same agent design, analysed but not measured (see the README).
 
+## Deep dive (optional, about 10 minutes)
+
+Show the deep-dive run from the checklist (item 5) rather than running it live. Its **Extensions** tab adds ACI-ONCE and MDP-STATEFUL columns and a WIF section.
+
+### Scene 6: "Can't we just make ACI ephemeral?" (2 minutes)
+
+1. Azure portal: `aci-azp-agent-once` > **Settings** > **Containers**: a **Restart events detected** banner, and **Restart count** goes up by one after each job. The **Properties** tab shows **Commands** `[ "/azp/start.sh", "--once" ]`. On the **Events** tab, the **Killing** and **Started** counts grow with each job.
+2. Deep-dive run > **Extensions**, ACI-ONCE columns: **Residue from an earlier job** is 🟢 no, because each restart gives a fresh container. The registration token is still 🔴 on disk, 🔴 in the `start.sh` environment and 🔴 usable, and the Azure identity still answers (🔴).
+   > "`--once` fixes leftover files, not the credential. And the PAT must stay valid, because the agent re-registers with it after every job; you'll see that in the audit log."
+
+### Scene 7: "MDP is only as safe as its settings" (2 minutes)
+
+1. Azure portal: `mdp-stateful-demo` > **Settings** > **Scaling**: **Agent state: Same agent can be reused by multiple builds**, **Standby agent mode: Off**, **Max time to live** `1.00:00:00`, **Grace period** `00:30:00`.
+2. **Extensions**, MDP-STATEFUL columns: both jobs show the same machine **and** the same boot ID, and job 2 finds job 1's file (🔴).
+3. Azure portal: resource group `rg-mdp-vs-aci-security` > **Settings** > **Policies** (opens **Policy | Compliance** for this resource group). The demo's two rows start with **Managed DevOps Pools should**; the other rows are the tenant's own assignments.
+   - **Managed DevOps Pools should give every job a fresh agent**: **Non-compliant**, **50% (1 out of 2)**: `mdp-stateful-demo` is flagged.
+   - **Managed DevOps Pools should run in your own virtual network**: **Non-compliant**, **0% (0 out of 2)**: VNet injection isn't possible in this subscription.
+   > "Make **Fresh agent every time** and private networking a policy, not a convention. Start with Audit, then switch to Deny."
+
+### Scene 8: "Only approved pipelines can use a pool" (2 minutes)
+
+1. Azure DevOps: **Pipelines** > `unapproved-pipeline` > **Run pipeline** > **Run**.
+2. The run shows **This pipeline needs permission to access a resource before this run can continue**, and the stage shows **Waiting** and **Permission needed**. Select **View**: **Waiting for review** lists **Permission**, **Agent pool** `mdp-security-demo`, with a **Permit** button. **Don't select Permit.** Close the panel and cancel the run.
+3. **Project settings** > **Agent pools** > `mdp-security-demo` > **Security** tab: **Pipeline permissions** lists only `security-probe`. Point out the page's own note: "All Classic pipelines can use this resource."
+   > "Restrict production pools to named pipelines, add **Approvals and checks**, and disable classic pipelines: they aren't covered by this list."
+
+### Scene 9: "Deploy without secrets" (2 minutes)
+
+1. **Project settings** > **Service connections** > `sc-wif-demo`: **Azure Resource Manager using workload identity federation with openid connect**, with the **Issuer** and **Subject identifier**. Tabs: **Usage history** and **Approvals and checks**.
+2. Deep-dive run > **Extensions** > **Deploying the recommended way: WIF service connection on MDP**: signed in via workload identity federation with no secret; read the resource group; allowed actions `*/read` only; no Azure identity outside the task.
+   > "The token exists only inside the task that names this connection, for pipelines we allow. Compare ACI, where the attached identity answered every job."
+
+### Scene 10: "Detect it" (1 minute)
+
+1. **Organization settings** > **General** > **Auditing** > **Logs**: **Added agent aci-once-1 to pool aci-once-demo.** and **Removed agent aci-once-1 from pool aci-once-demo.** after every ACI `--once` job. The **Actor** is the PAT owner, with the container's IP address. Also **Service Connection "sc-wif-demo" of type AzureRM executed in project mdp-vs-aci-security.**
+2. **Streams** tab: send the log to Azure Monitor or Microsoft Sentinel; Azure DevOps keeps it for 90 days.
+   > "A stolen registration PAT shows up as an unexpected **Added agent**. Alert on it for production pools."
+
 ## If something goes wrong
 
 | Symptom | Do this |
@@ -78,7 +118,11 @@ AKS: the same agent design, analysed but not measured (see the README).
 | `aci-agent-1` is offline | `az container restart -g rg-mdp-vs-aci-security -n aci-azp-agent`, then wait about 2 minutes. After the PAT expires (7 days), run `./scripts/deploy.ps1 ... -RotateAciToken`. |
 | The MDP stage waits more than 5 minutes | Probably outside the standby window. Open the warm-up run from `DEMO-LINKS.local.md`. |
 | MDP shows agents as offline in Azure DevOps | Expected between jobs. Check **Settings** > **Agents** in the Azure portal instead. |
+| The deep-dive MDP-STATEFUL stage waits a few minutes | Expected: that pool has no standby agent, so its first job waits for a machine. |
+| **Auditing** is missing from Organization settings | **Organization settings** > **Policies** > **Log audit events** > **On**. |
+| Policy compliance shows no results | Results can take up to 30 minutes after assignment. Run `az policy state trigger-scan -g rg-mdp-vs-aci-security`. |
+| An `unapproved-pipeline` run is still waiting | Cancel it. It never runs unless someone selects **Permit**. If someone did, re-run `deploy.ps1`; it removes that permission. |
 
 ## After the demo
 
-Run `./scripts/teardown.ps1 -DeleteProject`. It deletes the resource group, revokes the PAT, and removes the ACI agent pool and the project.
+Run `./scripts/teardown.ps1 -DeleteProject`. It deletes the policy baseline and the resource group, revokes both ACI PATs, and removes the ACI agent pools and the project (with its pipelines and service connection). It doesn't turn **Log audit events** off.
