@@ -25,10 +25,7 @@ $pipelineId = $state.pipelineId
 
 Write-Step 'Queueing the security probe'
 $run = Invoke-Ado -Method POST -Uri "$orgUrl/$projectPath/_apis/pipelines/$pipelineId/runs?api-version=7.1" -Body @{
-    templateParameters = @{
-        proofOfImpact = $ProofOfImpact.IsPresent.ToString().ToLowerInvariant()
-        includeAks    = ([bool]$state['aksPoolId']).ToString().ToLowerInvariant()
-    }
+    templateParameters = @{ proofOfImpact = $ProofOfImpact.IsPresent.ToString().ToLowerInvariant() }
     resources          = @{ repositories = @{ self = @{ refName = 'refs/heads/main' } } }
 }
 Write-Host "Run $($run.id): $orgUrl/$projectPath/_build/results?buildId=$($run.id)"

@@ -118,25 +118,6 @@ if [ "$proof" = "true" ]; then
   fi
 fi
 
-# 10. Kubernetes service account token mounted into the pod. One SelfSubjectAccessReview asks the API
-#     server whether this identity may list secrets; no secret is read. The token is sent via stdin.
-sa_dir=/var/run/secrets/kubernetes.io/serviceaccount
-if [ -r "$sa_dir/token" ]; then
-  ns="$(cat "$sa_dir/namespace" 2>/dev/null || printf 'default')"
-  review="{\"apiVersion\":\"authorization.k8s.io/v1\",\"kind\":\"SelfSubjectAccessReview\",\"spec\":{\"resourceAttributes\":{\"namespace\":\"$ns\",\"verb\":\"list\",\"resource\":\"secrets\"}}}"
-  allowed="$(printf 'header = "Authorization: Bearer %s"\n' "$(cat "$sa_dir/token")" | curl -s -K - --max-time 10 \
-    --cacert "$sa_dir/ca.crt" -H 'Content-Type: application/json' -X POST --data "$review" \
-    "https://${KUBERNETES_SERVICE_HOST:-kubernetes.default.svc}:${KUBERNETES_SERVICE_PORT:-443}/apis/authorization.k8s.io/v1/selfsubjectaccessreviews" \
-    2>/dev/null | jq -r '.status.allowed // empty' 2>/dev/null || true)"
-  case "$allowed" in
-    true) kube="yes: a service account token is mounted and can list secrets in namespace $ns" ;;
-    false) kube="token mounted (namespace $ns), but it can't list secrets" ;;
-    *) kube="token mounted (namespace $ns); the access check failed" ;;
-  esac
-else
-  kube="no Kubernetes service account token"
-fi
-
 findings="$out_dir/findings-$label-$job.json"
 jq -n \
   --arg pool "$label" --arg job "$job" --arg agent "${AGENT_NAME:-?}" --arg user "$run_user" \
@@ -145,7 +126,7 @@ jq -n \
   --arg envScope "checked $readable_environs readable process environments; PID 1 is $pid1" \
   --arg agentCreds "$(list "${agent_creds[@]}")" --arg machine "$machine" \
   --arg residue "$residue" --arg identity "$identity" --arg root "$root" \
-  --arg image "$image" --arg docker "$docker_ok" --arg impact "$impact" --arg kube "$kube" '
+  --arg image "$image" --arg docker "$docker_ok" --arg impact "$impact" '
   def flag(exposed): if exposed then "exposed" else "clear" end;
   {
     pool: $pool, job: $job, agent: $agent, user: $user,
@@ -157,8 +138,6 @@ jq -n \
       {id: "residue", name: "Residue from an earlier job", value: $residue, status: flag($residue | startswith("yes"))},
       {id: "machine", name: "Machine (hostname, boot ID)", value: $machine, status: "info"},
       {id: "identity", name: "Azure managed identity token obtainable", value: $identity, status: flag($identity | startswith("yes"))},
-      {id: "kubernetes", name: "Kubernetes service account access", value: $kube,
-       status: (if ($kube | startswith("yes")) then "exposed" elif ($kube | startswith("token mounted")) then "info" else "clear" end)},
       {id: "agent_creds", name: "Agent session credential files readable", value: $agentCreds, status: "info"},
       {id: "root", name: "Root access for the job", value: $root, status: "info"},
       {id: "image", name: "Image ownership", value: $image, status: "info"},
