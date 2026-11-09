@@ -1,0 +1,62 @@
+# Runs the same read-only security probe twice on each pool, then compares the results.
+# Queue it manually; CI and PR triggers are disabled.
+trigger: none
+pr: none
+
+parameters:
+- name: proofOfImpact
+  displayName: Proof of impact - make one read-only API call with any registration token a job finds
+  type: boolean
+  default: false
+- name: aciPool
+  displayName: ACI self-hosted agent pool
+  type: string
+  default: aci-selfhosted-demo
+- name: mdpPool
+  displayName: Managed DevOps Pool
+  type: string
+  default: mdp-security-demo
+
+stages:
+- stage: aci
+  displayName: ACI self-hosted agent
+  dependsOn: []
+  jobs:
+  - template: templates/probe-jobs.yml
+    parameters:
+      label: aci
+      pool: ${{ parameters.aciPool }}
+      proofOfImpact: ${{ parameters.proofOfImpact }}
+
+- stage: mdp
+  displayName: Managed DevOps Pool
+  dependsOn: []
+  jobs:
+  - template: templates/probe-jobs.yml
+    parameters:
+      label: mdp
+      pool: ${{ parameters.mdpPool }}
+      proofOfImpact: ${{ parameters.proofOfImpact }}
+
+- stage: compare
+  displayName: Compare findings
+  dependsOn:
+  - aci
+  - mdp
+  condition: succeededOrFailed()
+  jobs:
+  - job: compare
+    displayName: Side-by-side summary
+    pool:
+      name: ${{ parameters.aciPool }}
+    # The ACI agent is persistent, so remove files that earlier runs left in this workspace.
+    workspace:
+      clean: all
+    steps:
+    - checkout: self
+    - download: current
+      patterns: 'probe-*/findings-*.json'
+    - bash: bash scripts/compare.sh "$(Pipeline.Workspace)" "$(Build.ArtifactStagingDirectory)/comparison"
+      displayName: Build comparison table
+    - publish: $(Build.ArtifactStagingDirectory)/comparison
+      artifact: probe-comparison

@@ -1,0 +1,36 @@
+# Two sequential probe jobs on one pool. Job 2 shows whether job 1 left anything behind.
+parameters:
+- name: label
+  type: string
+- name: pool
+  type: string
+- name: proofOfImpact
+  type: boolean
+  default: false
+
+jobs:
+- job: ${{ parameters.label }}_job1
+  displayName: ${{ parameters.label }} job 1
+  timeoutInMinutes: 30
+  pool:
+    name: ${{ parameters.pool }}
+  steps:
+  - checkout: self
+  - bash: bash scripts/probe.sh '${{ parameters.label }}' job1 '${{ parameters.proofOfImpact }}'
+    displayName: Probe what this job can reach
+  - publish: $(Build.ArtifactStagingDirectory)/probe
+    artifact: probe-${{ parameters.label }}-job1
+
+- job: ${{ parameters.label }}_job2
+  displayName: ${{ parameters.label }} job 2
+  dependsOn: ${{ parameters.label }}_job1
+  condition: succeededOrFailed()
+  timeoutInMinutes: 30
+  pool:
+    name: ${{ parameters.pool }}
+  steps:
+  - checkout: self
+  - bash: bash scripts/probe.sh '${{ parameters.label }}' job2 '${{ parameters.proofOfImpact }}'
+    displayName: Probe what this job can reach
+  - publish: $(Build.ArtifactStagingDirectory)/probe
+    artifact: probe-${{ parameters.label }}-job2
