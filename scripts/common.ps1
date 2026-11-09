@@ -18,6 +18,13 @@ function Invoke-AzCli {
     $output
 }
 
+function Get-SignedInObjectId {
+    # Reads the object ID (oid claim) from an Azure Resource Manager token, avoiding a Microsoft Graph call.
+    $payload = (Invoke-AzCli account get-access-token --query accessToken -o tsv).Split('.')[1].Replace('-', '+').Replace('_', '/')
+    $payload += '=' * ((4 - $payload.Length % 4) % 4)
+    ([Text.Encoding]::UTF8.GetString([Convert]::FromBase64String($payload)) | ConvertFrom-Json).oid
+}
+
 function Get-AdoHeaders {
     if (-not $script:AdoToken -or $script:AdoTokenExpires -lt (Get-Date).AddMinutes(5)) {
         $token = Invoke-AzCli account get-access-token --resource $script:AdoResource -o json | ConvertFrom-Json

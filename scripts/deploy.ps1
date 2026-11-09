@@ -139,7 +139,7 @@ $usages = Invoke-AzCli rest --method get -o json `
 $family = $usages.value | Where-Object { $_.name.value -eq 'standardDADSv5Family' }
 if ($family) {
     Write-Host "standardDADSv5Family: $($family.currentValue) of $($family.limit) cores used"
-    if (($family.limit - $family.currentValue) -lt 4) { Write-Warning 'Fewer than 4 free cores: the pool may not reach 2 concurrent agents.' }
+    if (($family.limit - $family.currentValue) -lt 4) { Write-Warning 'Fewer than 4 cores free (this pool''s own running agents count too).' }
 }
 
 Write-Step "Azure DevOps project '$Project'"
@@ -235,7 +235,7 @@ if ($RotateAciToken) { Remove-RegistrationPat $previousAciPat }
 
 if (-not $SkipAks) {
     Write-Step 'AKS cluster: Entra ID with Azure RBAC, no local accounts, AcrPull for the kubelet identity'
-    $deployerObjectId = Invoke-AzCli ad signed-in-user show --query id -o tsv
+    $deployerObjectId = Get-SignedInObjectId
     $aksOutputs = Invoke-AzCli deployment group create --subscription $SubscriptionId --resource-group $ResourceGroup `
         --name mdp-vs-aci-aks --template-file (Join-Path $script:RepoRoot 'infra/aks.bicep') `
         --parameters registryName=$registryName deployerObjectId=$deployerObjectId `
