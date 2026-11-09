@@ -13,6 +13,13 @@
 
 .EXAMPLE
     ./scripts/deploy.ps1 -Organization contoso -SubscriptionId 00000000-0000-0000-0000-000000000000
+
+.EXAMPLE
+    # A second deployment in the same subscription (another organisation). MDP pool names are globally
+    # unique in Azure, so give the resource a new name and keep the Azure DevOps pool name with an alias.
+    # Choose a VM size whose MDP quota family still has free cores.
+    ./scripts/deploy.ps1 -Organization contoso-two -SubscriptionId <id> -ResourceGroup rg-mdp-vs-aci-two `
+        -MdpPoolName mdp-security-demo-two -MdpPoolAlias mdp-security-demo -MdpSku Standard_D2as_v5
 #>
 [CmdletBinding()]
 param(
@@ -22,7 +29,12 @@ param(
     [string] $Location = 'australiaeast',
     [string] $ResourceGroup = 'rg-mdp-vs-aci-security',
     [string] $AciPoolName = 'aci-selfhosted-demo',
+    # Azure resource name of the MDP pool. Must be globally unique in Azure.
     [string] $MdpPoolName = 'mdp-security-demo',
+    # Azure DevOps agent pool name, when it must differ from -MdpPoolName (pool alias).
+    [string] $MdpPoolAlias = '',
+    # Agent VM size. Pick one whose MDP quota family has free cores in -Location.
+    [ValidatePattern('^Standard_[A-Za-z0-9_]+$')] [string] $MdpSku = 'Standard_D2ads_v5',
     [ValidateRange(0, 2)] [int] $MdpStandbyAgents = 1,
     [ValidateRange(1, 30)] [int] $PatLifetimeDays = 7,
     # Replace the ACI agent's registration PAT (the old one is revoked).
@@ -36,13 +48,16 @@ $ErrorActionPreference = 'Stop'
 
 $orgUrl = "https://dev.azure.com/$Organization"
 $projectPath = [uri]::EscapeDataString($Project)
+# The name Azure DevOps shows for the MDP pool: the alias if set, otherwise the resource name.
+$mdpAdoPoolName = if ($MdpPoolAlias) { $MdpPoolAlias } else { $MdpPoolName }
 $state = Get-DemoState
 $state.organization = $Organization
 $state.project = $Project
 $state.subscriptionId = $SubscriptionId
 $state.resourceGroup = $ResourceGroup
 $state.aciPool = $AciPoolName
-$state.mdpPool = $MdpPoolName
+$state.mdpPool = $mdpAdoPoolName
+$state.mdpPoolResource = $MdpPoolName
 Save-DemoState $state
 
 Write-Step 'Azure access and resource providers'
@@ -56,14 +71,22 @@ foreach ($namespace in 'Microsoft.DevOpsInfrastructure', 'Microsoft.DevCenter', 
     }
 }
 
-Write-Step "Managed DevOps Pools quota in $Location"
+Write-Step "Managed DevOps Pools quota in $Location for $MdpSku"
 $usages = Invoke-AzCli rest --method get -o json `
     --url "https://management.azure.com/subscriptions/$SubscriptionId/providers/Microsoft.DevOpsInfrastructure/locations/$Location/usages?api-version=2024-04-04-preview" |
     ConvertFrom-Json
-$family = $usages.value | Where-Object { $_.name.value -eq 'standardDADSv5Family' }
-if ($family) {
-    Write-Host "standardDADSv5Family: $($family.currentValue) of $($family.limit) cores used"
-    if (($family.limit - $family.currentValue) -lt 4) { Write-Warning 'Fewer than 4 free cores: the pool may not reach 2 concurrent agents.' }
+# Standard_D2ads_v5 -> standardDADSv5Family (2 cores); Standard_D2as_v5 -> standardDASv5Family.
+if ($MdpSku -match '^Standard_([A-Z]+)(\d+)([a-z]*)_v(\d+)$') {
+    $familyName = 'standard' + $Matches[1] + $Matches[3].ToUpperInvariant() + 'v' + $Matches[4] + 'Family'
+    $coresPerAgent = [int]$Matches[2]
+    $family = $usages.value | Where-Object { $_.name.value -eq $familyName }
+    if ($family) {
+        $free = $family.limit - $family.currentValue
+        Write-Host "${familyName}: $($family.currentValue) of $($family.limit) cores used ($free free, $coresPerAgent per agent)"
+        if ($free -lt $coresPerAgent) { Write-Warning "No free $familyName quota: MDP jobs will wait. Choose another -MdpSku or request quota." }
+        elseif ($free -lt 2 * $coresPerAgent) { Write-Warning 'Not enough free cores for 2 concurrent agents.' }
+    }
+    else { Write-Warning "No MDP quota entry for $familyName in $Location. Check the SKU, or request quota." }
 }
 
 Write-Step "Azure DevOps project '$Project'"
@@ -109,16 +132,18 @@ Write-Host "Pool $($aciPool.id), project queue $($aciQueue.id)"
 
 Write-Step "Azure: Dev Center, Managed DevOps Pool, container registry and pull identity ($ResourceGroup)"
 Invoke-AzCli group create --subscription $SubscriptionId --name $ResourceGroup --location $Location --tags demo=mdp-vs-aci-security -o none
+$mainParameters = @("organizationUrl=$orgUrl", "projectName=$Project", "mdpPoolName=$MdpPoolName", "mdpStandbyAgents=$MdpStandbyAgents", "mdpSku=$MdpSku")
+if ($MdpPoolAlias) { $mainParameters += "mdpPoolAlias=$MdpPoolAlias" }
 $outputs = Invoke-AzCli deployment group create --subscription $SubscriptionId --resource-group $ResourceGroup `
     --name mdp-vs-aci-main --template-file (Join-Path $script:RepoRoot 'infra/main.bicep') `
-    --parameters organizationUrl=$orgUrl projectName=$Project mdpPoolName=$MdpPoolName mdpStandbyAgents=$MdpStandbyAgents `
+    --parameters @mainParameters `
     --query properties.outputs -o json | ConvertFrom-Json
 $registryName = $outputs.registryName.value
 $loginServer = $outputs.registryLoginServer.value
 $pullIdentityId = $outputs.pullIdentityId.value
 $state.registryName = $registryName
 Save-DemoState $state
-Write-Host "MDP pool '$($outputs.mdpPoolName.value)' and registry '$registryName' deployed"
+Write-Host "MDP pool '$($outputs.mdpPoolName.value)' (Azure DevOps name '$mdpAdoPoolName') and registry '$registryName' deployed"
 
 Write-Step 'ACI agent image (Microsoft documented Dockerfile), built with ACR Tasks'
 $image = "$loginServer/azp-agent:linux"
@@ -213,10 +238,10 @@ Save-DemoState $state
 Write-Step 'Authorising only this pipeline to use each pool'
 $deadline = (Get-Date).AddMinutes(5)
 do {
-    $mdpQueue = Get-AdoQueue $orgUrl $projectPath $MdpPoolName
+    $mdpQueue = Get-AdoQueue $orgUrl $projectPath $mdpAdoPoolName
     if (-not $mdpQueue) { Start-Sleep -Seconds 10 }
 } until ($mdpQueue -or (Get-Date) -gt $deadline)
-if (-not $mdpQueue) { throw "The MDP pool '$MdpPoolName' has not appeared in project '$Project'." }
+if (-not $mdpQueue) { throw "The MDP pool '$mdpAdoPoolName' has not appeared in project '$Project'." }
 foreach ($queue in @($aciQueue, $mdpQueue)) {
     Invoke-Ado -Method PATCH -Uri "$orgUrl/$projectPath/_apis/pipelines/pipelinePermissions/queue/$($queue.id)?api-version=7.1-preview.1" -Body @{
         pipelines = @(@{ id = $pipeline.id; authorized = $true })

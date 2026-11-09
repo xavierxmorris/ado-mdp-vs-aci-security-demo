@@ -24,8 +24,12 @@ $projectPath = [uri]::EscapeDataString($state.project)
 $pipelineId = $state.pipelineId
 
 Write-Step 'Queueing the security probe'
+# Pass the pool names this instance was deployed with, so non-default names work too.
+$templateParameters = @{ proofOfImpact = $ProofOfImpact.IsPresent.ToString().ToLowerInvariant() }
+if ($state['aciPool']) { $templateParameters.aciPool = $state.aciPool }
+if ($state['mdpPool']) { $templateParameters.mdpPool = $state.mdpPool }
 $run = Invoke-Ado -Method POST -Uri "$orgUrl/$projectPath/_apis/pipelines/$pipelineId/runs?api-version=7.1" -Body @{
-    templateParameters = @{ proofOfImpact = $ProofOfImpact.IsPresent.ToString().ToLowerInvariant() }
+    templateParameters = $templateParameters
     resources          = @{ repositories = @{ self = @{ refName = 'refs/heads/main' } } }
 }
 Write-Host "Run $($run.id): $orgUrl/$projectPath/_build/results?buildId=$($run.id)"

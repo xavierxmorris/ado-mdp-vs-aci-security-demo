@@ -13,8 +13,11 @@ param organizationUrl string
 @description('The only Azure DevOps project that can use the MDP pool.')
 param projectName string
 
-@description('MDP pool name. MDP creates an Azure DevOps agent pool with the same name.')
+@description('MDP pool name. Must be globally unique in Azure. MDP creates an Azure DevOps agent pool with this name unless mdpPoolAlias is set.')
 param mdpPoolName string = 'mdp-security-demo'
+
+@description('Optional Azure DevOps agent pool name (pool alias, API 2025-09-20 or later). Lets a second deployment keep the same Azure DevOps pool name, and so the same pipeline defaults, under a different, globally unique Azure name.')
+param mdpPoolAlias string = ''
 
 @description('Agent VM size. The default MDP quota (5 cores per family) allows two Standard_D2ads_v5 agents.')
 param mdpSku string = 'Standard_D2ads_v5'
@@ -85,7 +88,7 @@ resource mdpPool 'Microsoft.DevOpsInfrastructure/pools@2025-09-20' = {
   properties: {
     devCenterProjectResourceId: devCenterProject.id
     maximumConcurrency: mdpMaximumConcurrency
-    organizationProfile: {
+    organizationProfile: union({
       kind: 'AzureDevOps'
       organizations: [
         {
@@ -101,7 +104,9 @@ resource mdpPool 'Microsoft.DevOpsInfrastructure/pools@2025-09-20' = {
       permissionProfile: {
         kind: 'CreatorOnly'
       }
-    }
+    }, empty(mdpPoolAlias) ? {} : {
+      alias: mdpPoolAlias
+    })
     // Stateless = a fresh agent for every job; the VM is discarded afterwards.
     agentProfile: mdpStandbyAgents > 0 ? statelessAgentWithStandby : statelessAgent
     fabricProfile: {
