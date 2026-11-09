@@ -50,7 +50,7 @@ if ($state['deepDive']) {
         '|-------|------|'
         "| 6. ACI --once container group: Containers | $resourceGroup/providers/Microsoft.ContainerInstance/containerGroups/aci-azp-agent-once/containers |"
         "| 7. MDP with agent reuse: Overview | $resourceGroup/providers/Microsoft.DevOpsInfrastructure/pools/$($state['mdpStatefulPool'])/overview |"
-        "| 7. Azure Policy: Compliance | https://portal.azure.com/#@$tenant/view/Microsoft_Azure_Policy/PolicyMenuBlade/~/Compliance |"
+        "| 7. Resource group: Policies (compliance) | $resourceGroup/policies |"
         "| 8. Unapproved pipeline | $org/$project/_build?definitionId=$($state['unapprovedPipelineId']) |"
         "| 8. MDP pool: Security (pipeline permissions) | $org/$project/_settings/agentqueues?queueId=$mdpQueue&view=security |"
         "| 9. WIF service connection | $org/$project/_settings/adminservices?resourceId=$($state['wifServiceConnectionId']) |"

@@ -11,8 +11,8 @@ mkdir -p "$out_dir"
 state="$out_dir/wif-state.json"
 
 if [ "$phase" = "inside" ]; then
-  # Signed in by AzureCLI@2 with a federated token for this job only.
-  client_id="$(az account show --query user.name -o tsv 2>/dev/null || printf '?')"
+  # Signed in by AzureCLI@2 with a federated token for this job only. The client ID isn't printed.
+  account_type="$(az account show --query user.type -o tsv 2>/dev/null || printf '?')"
   if az group show --name "$resource_group" --query name -o tsv >/dev/null 2>&1; then
     read_result="yes: read $resource_group"
   else
@@ -30,7 +30,7 @@ if [ "$phase" = "inside" ]; then
   else
     write_result="allowed: $actions"
   fi
-  jq -n --arg who "service principal $client_id (federated, no secret)" --arg read "$read_result" --arg write "$write_result" \
+  jq -n --arg who "$account_type via workload identity federation (no secret)" --arg read "$read_result" --arg write "$write_result" \
     '{signedInAs: $who, readResult: $read, writeResult: $write}' > "$state"
   cat "$state"
   exit 0
