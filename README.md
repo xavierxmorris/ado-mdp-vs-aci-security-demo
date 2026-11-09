@@ -154,7 +154,7 @@ Region: **Australia East**. MDP is available in Australia East and Australia Sou
 ```powershell
 az login --tenant <tenant-id>
 ./scripts/deploy.ps1 -Organization <org> -SubscriptionId <subscription-id>
-./scripts/run-probe.ps1 -ProofOfImpact     # saves results/run-<id>.md
+./scripts/run-probe.ps1 -ProofOfImpact     # saves results/run-<id>-<org>.md
 ./scripts/run-probe.ps1 -ProofOfImpact -DeepDive   # also ACI --once, MDP agent reuse and WIF (about 10 minutes)
 ./scripts/audit-evidence.ps1               # saves results/audit-<date>.md
 ./scripts/teardown.ps1 -DeleteProject      # removes everything the demo created
@@ -163,6 +163,7 @@ az login --tenant <tenant-id>
 - `deploy.ps1` is safe to re-run. It uses Microsoft Entra tokens from the Azure CLI for Azure DevOps, so you need no PAT to run it.
 - `-ProofOfImpact` lets a probe job make **one read-only** API call (list agent pools) with any registration token it finds. Leave it off for a purely passive run.
 - For a live walkthrough, see [RUN-SHEET.md](RUN-SHEET.md). `./scripts/demo-links.ps1` writes your deployment's direct links to `DEMO-LINKS.local.md` (git-ignored).
+- [CLICK-THROUGH.md](CLICK-THROUGH.md) is the same demo verified in a second organisation, with the claim each step proves. It also covers [deploying a second instance](CLICK-THROUGH.md#build-this-instance) in the same subscription.
 
 ## Cost
 

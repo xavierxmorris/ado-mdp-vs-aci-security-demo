@@ -28,11 +28,20 @@ $pipelineId = $state.pipelineId
 if ($DeepDive -and -not $state['deepDive']) { throw 'Deep-dive resources are not deployed. Run ./scripts/deploy.ps1 without -SkipDeepDive.' }
 
 Write-Step 'Queueing the security probe'
+# Pass the pool names this instance was deployed with, so non-default names work too.
+$templateParameters = @{
+    proofOfImpact   = $ProofOfImpact.IsPresent.ToString().ToLowerInvariant()
+    includeDeepDive = $DeepDive.IsPresent.ToString().ToLowerInvariant()
+}
+if ($state['aciPool']) { $templateParameters.aciPool = $state.aciPool }
+if ($state['mdpPool']) { $templateParameters.mdpPool = $state.mdpPool }
+if ($DeepDive) {
+    if ($state['aciOncePool']) { $templateParameters.aciOncePool = $state.aciOncePool }
+    if ($state['mdpStatefulPool']) { $templateParameters.mdpStatefulPool = $state.mdpStatefulPool }
+    $templateParameters.wifResourceGroup = $state.resourceGroup
+}
 $run = Invoke-Ado -Method POST -Uri "$orgUrl/$projectPath/_apis/pipelines/$pipelineId/runs?api-version=7.1" -Body @{
-    templateParameters = @{
-        proofOfImpact   = $ProofOfImpact.IsPresent.ToString().ToLowerInvariant()
-        includeDeepDive = $DeepDive.IsPresent.ToString().ToLowerInvariant()
-    }
+    templateParameters = $templateParameters
     resources          = @{ repositories = @{ self = @{ refName = 'refs/heads/main' } } }
 }
 Write-Host "Run $($run.id): $orgUrl/$projectPath/_build/results?buildId=$($run.id)"
@@ -54,7 +63,8 @@ try {
     Invoke-WebRequest -Uri $artifact.resource.downloadUrl -Headers (Get-AdoHeaders) -OutFile $zip
     Expand-Archive -Path $zip -DestinationPath $work
     $comparison = Get-ChildItem -Path $work -Recurse -Filter comparison.md | Select-Object -First 1
-    $destination = Join-Path $script:RepoRoot "results/run-$($run.id).md"
+    # Run IDs are per organisation, so the file name includes the organisation.
+    $destination = Join-Path $script:RepoRoot "results/run-$($run.id)-$($state.organization).md"
     Copy-Item -Path $comparison.FullName -Destination $destination -Force
 } finally {
     Remove-Item -Path $work -Recurse -Force -ErrorAction SilentlyContinue

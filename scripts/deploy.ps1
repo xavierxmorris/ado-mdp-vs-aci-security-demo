@@ -18,6 +18,14 @@
 
 .EXAMPLE
     ./scripts/deploy.ps1 -Organization contoso -SubscriptionId 00000000-0000-0000-0000-000000000000
+
+.EXAMPLE
+    # A second deployment in the same subscription (another organisation). MDP pool names are globally
+    # unique in Azure, so give the resource a new name and keep the Azure DevOps pool name with an alias.
+    # Choose a VM size whose MDP quota family still has free cores. Deploy the deep dive in one instance
+    # only (-SkipDeepDive here): its MDP pool name is global and its policy definitions are per subscription.
+    ./scripts/deploy.ps1 -Organization contoso-two -SubscriptionId <id> -ResourceGroup rg-mdp-vs-aci-two `
+        -MdpPoolName mdp-security-demo-two -MdpPoolAlias mdp-security-demo -MdpSku Standard_D2as_v5 -SkipDeepDive
 #>
 [CmdletBinding()]
 param(
@@ -28,7 +36,13 @@ param(
     [string] $ResourceGroup = 'rg-mdp-vs-aci-security',
     [string] $AciPoolName = 'aci-selfhosted-demo',
     [string] $AciOncePoolName = 'aci-once-demo',
+    # Azure resource name of the MDP pool. Must be globally unique in Azure.
     [string] $MdpPoolName = 'mdp-security-demo',
+    # Azure DevOps agent pool name, when it must differ from -MdpPoolName (pool alias).
+    [string] $MdpPoolAlias = '',
+    # Agent VM size. Pick one whose MDP quota family has free cores in -Location.
+    [ValidatePattern('^Standard_[A-Za-z0-9_]+$')] [string] $MdpSku = 'Standard_D2ads_v5',
+    # Deep dive: MDP pool that reuses agents. Also globally unique in Azure.
     [string] $MdpStatefulPoolName = 'mdp-stateful-demo',
     [string] $WifServiceConnectionName = 'sc-wif-demo',
     [ValidateRange(0, 2)] [int] $MdpStandbyAgents = 1,
@@ -46,13 +60,18 @@ $ErrorActionPreference = 'Stop'
 $deepDive = -not $SkipDeepDive
 $orgUrl = "https://dev.azure.com/$Organization"
 $projectPath = [uri]::EscapeDataString($Project)
+# The name Azure DevOps shows for the MDP pool: the alias if set, otherwise the resource name.
+$mdpAdoPoolName = if ($MdpPoolAlias) { $MdpPoolAlias } else { $MdpPoolName }
+# Deep dive: a VM family separate from the default one, so both pools fit the default 5-core quotas.
+$mdpStatefulSku = 'Standard_E2as_v4'
 $state = Get-DemoState
 $state.organization = $Organization
 $state.project = $Project
 $state.subscriptionId = $SubscriptionId
 $state.resourceGroup = $ResourceGroup
 $state.aciPool = $AciPoolName
-$state.mdpPool = $MdpPoolName
+$state.mdpPool = $mdpAdoPoolName
+$state.mdpPoolResource = $MdpPoolName
 $state.deepDive = $deepDive
 Save-DemoState $state
 
@@ -176,13 +195,26 @@ foreach ($namespace in $namespaces) {
     }
 }
 
-Write-Step "Managed DevOps Pools quota in $Location"
+$mdpSkus = @($MdpSku) + $(if ($deepDive) { @($mdpStatefulSku) } else { @() })
+Write-Step "Managed DevOps Pools quota in $Location for $($mdpSkus -join ', ')"
 $usages = Invoke-AzCli rest --method get -o json `
     --url "https://management.azure.com/subscriptions/$SubscriptionId/providers/Microsoft.DevOpsInfrastructure/locations/$Location/usages?api-version=2024-04-04-preview" |
     ConvertFrom-Json
-foreach ($familyName in @('standardDADSv5Family') + $(if ($deepDive) { @('standardEASv4Family') } else { @() })) {
-    $family = $usages.value | Where-Object { $_.name.value -eq $familyName }
-    if ($family) { Write-Host "$($familyName): $($family.currentValue) of $($family.limit) cores used (this demo's own agents count too)" }
+foreach ($sku in $mdpSkus) {
+    # Standard_D2ads_v5 -> standardDADSv5Family (2 cores); Standard_E2as_v4 -> standardEASv4Family.
+    if ($sku -match '^Standard_([A-Z]+)(\d+)([a-z]*)_v(\d+)$') {
+        $familyName = 'standard' + $Matches[1] + $Matches[3].ToUpperInvariant() + 'v' + $Matches[4] + 'Family'
+        $coresPerAgent = [int]$Matches[2]
+        $family = $usages.value | Where-Object { $_.name.value -eq $familyName }
+        if ($family) {
+            $free = $family.limit - $family.currentValue
+            # On a re-run, this demo's own agents are already counted as used.
+            Write-Host "${familyName}: $($family.currentValue) of $($family.limit) cores used ($free free, $coresPerAgent per agent)"
+            if ($free -lt $coresPerAgent) { Write-Warning "No free $familyName quota: new MDP agents will wait. Choose another -MdpSku or request quota." }
+            elseif ($sku -eq $MdpSku -and $free -lt 2 * $coresPerAgent) { Write-Warning 'Not enough free cores for 2 concurrent agents.' }
+        }
+        else { Write-Warning "No MDP quota entry for $familyName in $Location. Check the SKU, or request quota." }
+    }
 }
 
 Write-Step "Azure DevOps project '$Project'"
@@ -222,10 +254,14 @@ Save-DemoState $state
 Write-Step "Azure: Dev Center, Managed DevOps Pools, container registry and identities ($ResourceGroup)"
 Invoke-AzCli group create --subscription $SubscriptionId --name $ResourceGroup --location $Location --tags demo=mdp-vs-aci-security -o none
 $deepDiveFlag = $deepDive.ToString().ToLowerInvariant()
+$mainParameters = @(
+    "organizationUrl=$orgUrl", "projectName=$Project", "mdpPoolName=$MdpPoolName", "mdpStandbyAgents=$MdpStandbyAgents", "mdpSku=$MdpSku",
+    "mdpStatefulPoolName=$MdpStatefulPoolName", "mdpStatefulSku=$mdpStatefulSku", "deployStatefulPool=$deepDiveFlag", "deployWifIdentity=$deepDiveFlag"
+)
+if ($MdpPoolAlias) { $mainParameters += "mdpPoolAlias=$MdpPoolAlias" }
 $outputs = Invoke-AzCli deployment group create --subscription $SubscriptionId --resource-group $ResourceGroup `
     --name mdp-vs-aci-main --template-file (Join-Path $script:RepoRoot 'infra/main.bicep') `
-    --parameters organizationUrl=$orgUrl projectName=$Project mdpPoolName=$MdpPoolName mdpStandbyAgents=$MdpStandbyAgents `
-    mdpStatefulPoolName=$MdpStatefulPoolName deployStatefulPool=$deepDiveFlag deployWifIdentity=$deepDiveFlag `
+    --parameters @mainParameters `
     --query properties.outputs -o json | ConvertFrom-Json
 $registryName = $outputs.registryName.value
 $loginServer = $outputs.registryLoginServer.value
@@ -236,7 +272,7 @@ if ($deepDive) {
     $state.wifIdentityName = $outputs.wifIdentityName.value
 }
 Save-DemoState $state
-Write-Host "MDP pool '$($outputs.mdpPoolName.value)'$(if ($deepDive) { " and '$MdpStatefulPoolName'" }), registry '$registryName' deployed"
+Write-Host "MDP pool '$($outputs.mdpPoolName.value)' (Azure DevOps name '$mdpAdoPoolName')$(if ($deepDive) { " and '$MdpStatefulPoolName'" }), registry '$registryName' deployed"
 
 Write-Step 'Agent image (Microsoft documented Dockerfile), built with ACR Tasks'
 $image = "$loginServer/azp-agent:linux"
@@ -280,7 +316,7 @@ if ($deepDive) {
 Save-DemoState $state
 
 Write-Step 'Authorising only security-probe to use each pool'
-$mdpQueue = Wait-ProjectQueue $MdpPoolName
+$mdpQueue = Wait-ProjectQueue $mdpAdoPoolName
 $state.mdpQueueId = $mdpQueue.id
 $queues = @($aci.queue, $mdpQueue)
 if ($deepDive) {
@@ -295,7 +331,7 @@ foreach ($queue in $queues) {
 if ($deepDive) {
     # Keep the access-control scene repeatable: revoke any permission given during a previous demo.
     Set-QueuePipelinePermission $mdpQueue.id $unapproved.id $false
-    Write-Host 'unapproved-pipeline is not authorised on mdp-security-demo'
+    Write-Host "unapproved-pipeline is not authorised on '$mdpAdoPoolName'"
 }
 Save-DemoState $state
 
