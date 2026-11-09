@@ -55,7 +55,7 @@ stages:
     steps:
     - checkout: self
     - download: current
-      patterns: 'probe-*/findings-*.json'
+      patterns: '**/findings-*.json'
     - bash: bash scripts/compare.sh "$(Pipeline.Workspace)" "$(Build.ArtifactStagingDirectory)/comparison"
       displayName: Build comparison table
     - publish: $(Build.ArtifactStagingDirectory)/comparison
