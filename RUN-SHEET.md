@@ -18,7 +18,7 @@
 | 1-3 | Azure portal: container group, then the MDP pool | "ACI is a container that we build and patch. It registers with a PAT that has Agent Pools read & manage. MDP is an Azure resource: stateless agents, a Microsoft-maintained image, and a standby schedule. No PAT anywhere." |
 | 3-4 | Queue `security-probe` with **Proof of impact** ticked | "Each pool runs the same read-only probe twice. It prints names and yes/no results, never secret values." |
 | 4-8 | The completed run's **Extensions** tab | Walk the red rows top to bottom (next section). |
-| 8-10 | README "Why the results differ" | Map each finding to the recommendation: MDP, ephemeral agents, no identities on agents, WIF service connections. |
+| 8-10 | README "Why the results differ" | Map each finding to the recommendation: MDP, ephemeral agents, no identities on agents, WIF service connections. Then cover the AKS column (analysis, not measured): same image and PAT as ACI, plus a Kubernetes secret, pod access to the node's identity through IMDS by default, and outbound access you must design. |
 
 ## Reading the table
 

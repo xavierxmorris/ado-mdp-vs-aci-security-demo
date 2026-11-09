@@ -1,9 +1,12 @@
-# MDP vs ACI: what can a pipeline job reach?
+# MDP vs ACI vs AKS: what can a pipeline job reach?
 
-A live, evidence-based security comparison of two ways to run self-hosted Azure Pipelines agents:
+A live, evidence-based security comparison of self-hosted Azure Pipelines agents:
 
-- **Managed DevOps Pools (MDP)**: Microsoft's recommended managed agent pools, with a fresh VM for every job.
-- **Azure Container Instances (ACI)**: [Microsoft's documented Docker agent](https://learn.microsoft.com/azure/devops/pipelines/agents/docker), unchanged, running in ACI.
+- **Managed DevOps Pools (MDP)**: Microsoft's recommended managed agent pools, with a fresh VM for every job. *Measured.*
+- **Azure Container Instances (ACI)**: [Microsoft's documented Docker agent](https://learn.microsoft.com/azure/devops/pipelines/agents/docker), unchanged, running in ACI. *Measured.*
+- **Azure Kubernetes Service (AKS)**: the same agent image with [Microsoft's documented Kubernetes deployment](https://learn.microsoft.com/azure/devops/pipelines/agents/docker#use-azure-kubernetes-service-cluster). *Analysed, not measured:* see [AKS](#aks-analysis-not-measured).
+
+VMSS agent pools aren't included: Microsoft describes MDP as their evolution. Q2 of the briefing pack compares all four options from documentation.
 
 One pipeline runs the same **read-only probe** twice on each pool and reports what any job on that agent can reach. Examples include the agent's registration credential, files left by earlier jobs, and Azure identities. The probe never prints secret values. It reports only paths, variable names, machine identifiers, yes/no results and HTTP status codes.
 
@@ -36,21 +39,42 @@ What the evidence shows:
 - **MDP gave each job a new VM.** Both MDP jobs reported agent name `mdp-security-demo 1`, but different hostnames and boot IDs, and neither found residue.
 - **MDP jobs have root on a disposable VM.** The job account has passwordless sudo. The VM holds no registration token or Azure identity and is discarded after the job.
 
+## AKS (analysis, not measured)
+
+We tried to measure AKS in the same subscription, but cluster creation was blocked: the subscription doesn't allow public IP addresses (`SubscriptionNotRegisteredForFeature` for `Microsoft.Network/AllowBringYourOwnPublicIpAddress`), so the nodes couldn't get outbound access to Azure DevOps. We chose not to register that subscription-wide exception. The expectations below come from Microsoft's documented AKS steps, which use **the same image and `start.sh` measured on ACI**.
+
+| Check | Expected for Microsoft's AKS deployment | Basis |
+|---|---|---|
+| Registration token readable on disk | 🔴 Yes: `/azp/.token` | Same image and `start.sh` as ACI (measured above). |
+| Registration secret in a process environment | 🔴 Yes: `AZP_TOKEN` in `start.sh` | The PAT is injected from the `azdevops` secret as an environment variable, as on ACI. |
+| Registration token usable from the job | 🔴 Yes | Same PAT and scope as ACI. |
+| PAT also stored as a Kubernetes secret | 🔴 Yes: secret `azdevops` | Microsoft's step 1: `kubectl create secret generic azdevops`. Anyone who can read secrets in that namespace can read the PAT. |
+| Residue from an earlier job | 🔴 Yes | The manifest runs a persistent Deployment (`replicas: 1`, no `--once`). |
+| Azure managed identity token obtainable | 🔴 Expected yes | Microsoft: by default, all pods can reach IMDS. Pods can then request tokens for the node's managed identities, including the kubelet identity that the steps grant `AcrPull` with `--attach-acr`. Blocking pod access to IMDS is in preview. |
+| Host access | 🔴 The example mounts the node's `/var/run/docker.sock` | The documented manifest uses a `hostPath` volume. AKS nodes use containerd, so there is no Docker socket, but `hostPath` mounts weaken pod isolation. Remove the mount. |
+| Docker available to jobs | No | Microsoft: Docker tasks don't work on AKS 1.19 or later. |
+| Image ownership | Customer-built; you also patch the nodes | Same image as ACI, plus node image upgrades. |
+
+*(Our analysis. Check the expectations by running [scripts/probe.sh](scripts/probe.sh) on an AKS agent in a subscription that allows outbound IP addresses.)*
+
 ## Why the results differ
 
-| Area | ACI with Microsoft's container agent | Managed DevOps Pools |
-|------|--------------------------------------|----------------------|
-| Agent registration | Needs a **PAT** (or a service principal secret) with *Agent Pools (read & manage)*. Microsoft's `start.sh` keeps the PAT in `/azp/.token` so the agent can deregister itself on exit. | The MDP service registers agents. No registration credential is placed on the agent. |
-| Who can read it | Every job on the agent, because jobs run as the same `agent` account as `start.sh`. `unset AZP_TOKEN` stops child processes inheriting the PAT, but `start.sh` still holds it in its own environment. | Not applicable. |
-| ACI `secureValue` | Hides the PAT from the Azure control plane only. | Not applicable. |
-| What a stolen registration PAT allows | It can register agents into any pool its owner administers. An attacker-controlled agent could then receive other pipelines' jobs and their secrets. *(Our analysis; the demo made one read-only call.)* | Not applicable. |
-| Isolation between jobs | Persistent agent: files from one pipeline remain for the next, including pipelines from other projects that use the pool. | Stateless: each job gets a new VM, which is discarded afterwards. |
-| Root on the agent | No (Microsoft's Dockerfile runs as `agent`), but root isn't needed to read the PAT. | Yes, passwordless sudo, on a VM that holds no reusable secret and lasts one job. |
-| Azure identities | Any identity on the container group, even one used only for image pulls, issues tokens to jobs. | The demo pool has no identity. If you add one, jobs can use it too, so prefer workload identity federation service connections. |
-| Image patching | You build, patch and rebuild the image. The agent downloads itself at start-up by using the PAT. | Microsoft-maintained Azure Pipelines images (or your own gallery images), with optional version pinning. |
-| Container builds | No Docker daemon in ACI. | Docker is available on the VM. |
-| Inbound exposure | None here: the container group has no IP address. | None: agent VMs run in a Microsoft-managed subscription. |
-| Private networking | Both support VNet injection. It is **not** a differentiator and is not deployed here. | |
+AKS entries are *analysis* (see above); ACI and MDP entries are measured.
+
+| Area | ACI with Microsoft's container agent | AKS with Microsoft's Kubernetes manifest *(analysis)* | Managed DevOps Pools |
+|------|--------------------------------------|------------------------------------------------------|----------------------|
+| Agent registration | Needs a **PAT** (or a service principal secret) with *Agent Pools (read & manage)*. Microsoft's `start.sh` keeps the PAT in `/azp/.token` so the agent can deregister itself on exit. | Same image, so the same PAT requirement. Microsoft's steps also store the PAT as a Kubernetes secret. | The MDP service registers agents. No registration credential is placed on the agent. |
+| Who can read it | Every job on the agent, because jobs run as the same `agent` account as `start.sh`. `unset AZP_TOKEN` stops child processes inheriting the PAT, but `start.sh` still holds it in its own environment. | Every job on the agent, as on ACI, plus anyone who can read secrets in the namespace. | Not applicable. |
+| Platform secret protection | ACI `secureValue` hides the PAT from the Azure control plane only. | Kubernetes secrets block users without `get secrets`, not processes in the pod. | Not applicable. |
+| What a stolen registration PAT allows | It can register agents into any pool its owner administers. An attacker-controlled agent could then receive other pipelines' jobs and their secrets. *(Our analysis; the demo made one read-only call.)* | Same. | Not applicable. |
+| Isolation between jobs | Persistent agent: files from one pipeline remain for the next, including pipelines from other projects that use the pool. | Persistent Deployment: same as ACI. Per-job pods need extra tooling, such as KEDA (a community project). | Stateless: each job gets a new VM, which is discarded afterwards. |
+| Root on the agent | No (Microsoft's Dockerfile runs as `agent`), but root isn't needed to read the PAT. | No (same image); root isn't needed to read the PAT. | Yes, passwordless sudo, on a VM that holds no reusable secret and lasts one job. |
+| Azure identities | Any identity on the container group, even one used only for image pulls, issues tokens to jobs. | By default every pod can reach IMDS, so jobs can request the node's identity tokens. Blocking this is in preview. | The demo pool has no identity. If you add one, jobs can use it too, so prefer workload identity federation service connections. |
+| Image patching | You build, patch and rebuild the image. The agent downloads itself at start-up by using the PAT. | You patch the image and upgrade the nodes and cluster. | Microsoft-maintained Azure Pipelines images (or your own gallery images), with optional version pinning. |
+| Container builds | No Docker daemon in ACI. | No Docker on AKS 1.19 or later; Microsoft's example still mounts `docker.sock` from the node, which should be removed. | Docker is available on the VM. |
+| Outbound access | Platform-managed. | You design it (load balancer IP, NAT gateway or firewall). It blocked our AKS test. | Microsoft-managed, or through your VNet with VNet injection. |
+| Inbound exposure | None here: the container group has no IP address. | The agent needs none; cluster endpoints depend on your design. | None: agent VMs run in a Microsoft-managed subscription. |
+| Private networking | All three support private networking. It is **not** a differentiator and isn't deployed here. | | |
 
 ### If you must run container agents
 
@@ -111,6 +135,7 @@ Run `teardown.ps1` after the demo.
 
 - **Scope of the evidence.** Measured on 9 November 2026 in one demo tenant in Australia East. Pipeline runs 3 to 5 showed the same exposures; [results/run-5.md](results/run-5.md) has the full output of run 5. An earlier probe version checked only PID 1 and the agent listener, so it missed the PAT in `start.sh`'s environment. In ACI, PID 1 is the `pause` process.
 - **The ACI side is Microsoft's documented container agent, unchanged, using a PAT.** Not tested: service principal registration, `--once` with automatic replacement, VNet injection, and Windows agents. A hardened custom design could reduce some exposures, but a registration credential must still reach the container. *(Our analysis.)*
+- **AKS wasn't measured.** The subscription blocks public IP addresses, so the cluster couldn't be created, and we didn't register the subscription-wide exception. The AKS entries are analysis based on Microsoft's documentation and the shared image; the probe hasn't confirmed them.
 - **MDP isn't safe in every respect.** Jobs get root on the VM and can read the agent's own session credentials while the job runs. The protection comes from stateless VMs that hold no reusable secret.
 - **The proof of impact made one read-only call.** "Listed 12 agent pools" is the count that call returned. The demo never used the PAT to change anything.
 - **The ACI identity in this demo has only `AcrPull`** on the demo registry. The finding is about reachability: any role granted to that identity is available to every job.
@@ -138,3 +163,5 @@ Retrieved 9 November 2026.
 - Configure images (`ubuntu-24.04-g2`): <https://learn.microsoft.com/azure/devops/managed-devops-pools/configure-images?view=azure-devops>
 - `Microsoft.DevOpsInfrastructure/pools` template reference: <https://learn.microsoft.com/azure/templates/microsoft.devopsinfrastructure/pools>
 - PAT Lifecycle Management API: <https://learn.microsoft.com/azure/devops/organizations/accounts/use-personal-access-tokens-to-authenticate?view=azure-devops#manage-pats-with-the-lifecycle-management-apis>
+- Run the agent on AKS (secret, Deployment manifest, Docker caution): <https://learn.microsoft.com/azure/devops/pipelines/agents/docker?view=azure-devops#use-azure-kubernetes-service-cluster>
+- Block pod access to IMDS on AKS (preview; by default all pods can reach IMDS): <https://learn.microsoft.com/azure/aks/imds-restriction>
