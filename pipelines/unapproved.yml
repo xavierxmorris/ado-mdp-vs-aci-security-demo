@@ -1,0 +1,12 @@
+# Deep dive: a pipeline that nobody has authorised to use the Managed DevOps Pool.
+# Queue it to show that Azure DevOps holds the run until an administrator permits it; then cancel the run.
+trigger: none
+pr: none
+
+pool:
+  name: mdp-security-demo
+
+steps:
+- checkout: none
+- bash: echo "This runs only if an administrator permitted this pipeline to use the pool."
+  displayName: Unapproved step

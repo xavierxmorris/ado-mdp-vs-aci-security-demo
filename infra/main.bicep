@@ -30,6 +30,17 @@ param mdpStandbyAgents int = 1
 @description('Suffix that makes registry and Dev Center names unique.')
 param suffix string = substring(uniqueString(resourceGroup().id), 0, 8)
 
+@description('Deep dive: a second MDP pool configured to reuse agents ("Same agent can be reused by multiple builds").')
+param deployStatefulPool bool = true
+
+param mdpStatefulPoolName string = 'mdp-stateful-demo'
+
+@description('Uses a different VM family from the main pool, so the two pools draw on separate MDP quota.')
+param mdpStatefulSku string = 'Standard_E2as_v4'
+
+@description('Deep dive: a user-assigned identity for a workload identity federation (WIF) service connection, with Reader on this resource group only.')
+param deployWifIdentity bool = true
+
 var tags = {
   demo: 'mdp-vs-aci-security'
 }
@@ -119,6 +130,66 @@ resource mdpPool 'Microsoft.DevOpsInfrastructure/pools@2025-09-20' = {
   }
 }
 
+// Deep dive: the same pool, misconfigured to reuse agents. Expect residue between jobs.
+resource mdpStatefulPool 'Microsoft.DevOpsInfrastructure/pools@2025-09-20' = if (deployStatefulPool) {
+  name: mdpStatefulPoolName
+  location: location
+  tags: tags
+  properties: {
+    devCenterProjectResourceId: devCenterProject.id
+    maximumConcurrency: 1
+    organizationProfile: {
+      kind: 'AzureDevOps'
+      organizations: [
+        {
+          url: organizationUrl
+          projects: [
+            projectName
+          ]
+          openAccess: false
+        }
+      ]
+      permissionProfile: {
+        kind: 'CreatorOnly'
+      }
+    }
+    // "Same agent can be reused by multiple builds": the machine waits 30 minutes for the next job.
+    agentProfile: {
+      kind: 'Stateful'
+      maxAgentLifetime: '1.00:00:00'
+      gracePeriodTimeSpan: '00:30:00'
+    }
+    fabricProfile: {
+      kind: 'Vmss'
+      sku: {
+        name: mdpStatefulSku
+      }
+      images: [
+        {
+          wellKnownImageName: 'ubuntu-24.04-g2'
+        }
+      ]
+    }
+  }
+}
+
+resource wifIdentity 'Microsoft.ManagedIdentity/userAssignedIdentities@2023-01-31' = if (deployWifIdentity) {
+  name: 'id-wif-deployer-${suffix}'
+  location: location
+  tags: tags
+}
+
+var readerRoleId = 'acdd72a7-3385-48ef-bd42-f606fba81ae7'
+
+resource wifReader 'Microsoft.Authorization/roleAssignments@2022-04-01' = if (deployWifIdentity) {
+  name: guid(resourceGroup().id, 'id-wif-deployer-${suffix}', readerRoleId)
+  properties: {
+    principalId: wifIdentity!.properties.principalId
+    principalType: 'ServicePrincipal'
+    roleDefinitionId: subscriptionResourceId('Microsoft.Authorization/roleDefinitions', readerRoleId)
+  }
+}
+
 resource registry 'Microsoft.ContainerRegistry/registries@2025-04-01' = {
   name: 'acrmdpaci${suffix}'
   location: location
@@ -153,3 +224,5 @@ output mdpPoolName string = mdpPool.name
 output registryName string = registry.name
 output registryLoginServer string = registry.properties.loginServer
 output pullIdentityId string = pullIdentity.id
+output wifIdentityName string = deployWifIdentity ? wifIdentity!.name : ''
+output wifClientId string = deployWifIdentity ? wifIdentity!.properties.clientId : ''

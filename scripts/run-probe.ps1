@@ -5,11 +5,14 @@
 
 .EXAMPLE
     ./scripts/run-probe.ps1 -ProofOfImpact
+    ./scripts/run-probe.ps1 -ProofOfImpact -DeepDive
 #>
 [CmdletBinding()]
 param(
     # Let probe jobs make one read-only API call with any registration token they find.
     [switch] $ProofOfImpact,
+    # Also run ACI with --once, MDP with agent reuse, and the WIF deployment (adds several minutes).
+    [switch] $DeepDive,
     [ValidateRange(5, 120)] [int] $TimeoutMinutes = 45
 )
 
@@ -22,10 +25,14 @@ if (-not $state['pipelineId']) { throw 'Run ./scripts/deploy.ps1 first.' }
 $orgUrl = "https://dev.azure.com/$($state.organization)"
 $projectPath = [uri]::EscapeDataString($state.project)
 $pipelineId = $state.pipelineId
+if ($DeepDive -and -not $state['deepDive']) { throw 'Deep-dive resources are not deployed. Run ./scripts/deploy.ps1 without -SkipDeepDive.' }
 
 Write-Step 'Queueing the security probe'
 $run = Invoke-Ado -Method POST -Uri "$orgUrl/$projectPath/_apis/pipelines/$pipelineId/runs?api-version=7.1" -Body @{
-    templateParameters = @{ proofOfImpact = $ProofOfImpact.IsPresent.ToString().ToLowerInvariant() }
+    templateParameters = @{
+        proofOfImpact   = $ProofOfImpact.IsPresent.ToString().ToLowerInvariant()
+        includeDeepDive = $DeepDive.IsPresent.ToString().ToLowerInvariant()
+    }
     resources          = @{ repositories = @{ self = @{ refName = 'refs/heads/main' } } }
 }
 Write-Host "Run $($run.id): $orgUrl/$projectPath/_build/results?buildId=$($run.id)"

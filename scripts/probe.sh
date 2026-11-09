@@ -128,20 +128,33 @@ jq -n \
   --arg residue "$residue" --arg identity "$identity" --arg root "$root" \
   --arg image "$image" --arg docker "$docker_ok" --arg impact "$impact" '
   def flag(exposed): if exposed then "exposed" else "clear" end;
+  def abbreviate: if length > 16 then .[0:11] + "…" + .[-4:] else . end;
   {
     pool: $pool, job: $job, agent: $agent, user: $user,
     checks: [
-      {id: "token_file", name: "Registration token readable on disk", value: $tokenFiles, status: flag($tokenFiles != "none")},
-      {id: "secret_env", name: "Registration secret in a process environment", value: ($secretEnv + " (" + $envScope + ")"), status: flag($secretEnv != "none")},
+      {id: "token_file", name: "Registration token readable on disk", value: $tokenFiles, short: $tokenFiles,
+       status: flag($tokenFiles != "none")},
+      {id: "secret_env", name: "Registration secret in a process environment", value: ($secretEnv + " (" + $envScope + ")"),
+       short: $secretEnv, status: flag($secretEnv != "none")},
       {id: "impact", name: "Registration token usable from the job (read-only proof)", value: $impact,
+       short: (if ($impact | startswith("yes")) then "yes: listed " + (($impact | capture("listed (?<n>[0-9?]+)")).n // "?") + " pools"
+               elif $impact == "no registration token found" then "no token" else $impact end),
        status: (if $impact == "not attempted" then "info" else flag($impact | startswith("yes")) end)},
-      {id: "residue", name: "Residue from an earlier job", value: $residue, status: flag($residue | startswith("yes"))},
-      {id: "machine", name: "Machine (hostname, boot ID)", value: $machine, status: "info"},
-      {id: "identity", name: "Azure managed identity token obtainable", value: $identity, status: flag($identity | startswith("yes"))},
-      {id: "agent_creds", name: "Agent session credential files readable", value: $agentCreds, status: "info"},
-      {id: "root", name: "Root access for the job", value: $root, status: "info"},
-      {id: "image", name: "Image ownership", value: $image, status: "info"},
-      {id: "docker", name: "Docker available to jobs", value: $docker, status: "info"}
+      {id: "residue", name: "Residue from an earlier job", value: $residue,
+       short: (if ($residue | startswith("yes")) then "yes: from " + (($residue | capture("\\((?<src>[^)]+)\\)")).src // "an earlier job") else "no" end),
+       status: flag($residue | startswith("yes"))},
+      {id: "machine", name: "Machine (hostname, boot ID)", value: $machine,
+       short: (($machine | split(", boot ")) as $m | ($m[0] | abbreviate) + ", boot " + ($m[1] // "?")), status: "info"},
+      {id: "identity", name: "Azure managed identity token obtainable", value: $identity,
+       short: ($identity | sub(": a token was issued to this job"; "") | sub("identity endpoint unreachable"; "unreachable")),
+       status: flag($identity | startswith("yes"))},
+      {id: "agent_creds", name: "Agent session credential files readable", value: $agentCreds, short: $agentCreds, status: "info"},
+      {id: "root", name: "Root access for the job", value: $root,
+       short: (if ($root | startswith("yes (passwordless")) then "yes (sudo)" elif ($root | startswith("yes")) then "yes (root)" else "no (" + $user + ")" end),
+       status: "info"},
+      {id: "image", name: "Image ownership", value: $image,
+       short: (if ($image | startswith("Microsoft")) then "Microsoft-maintained" else "customer-built" end), status: "info"},
+      {id: "docker", name: "Docker available to jobs", value: $docker, short: $docker, status: "info"}
     ]
   }' > "$findings"
 

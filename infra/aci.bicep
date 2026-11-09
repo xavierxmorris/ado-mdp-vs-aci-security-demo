@@ -24,12 +24,17 @@ param azpToken string
 
 param agentName string = 'aci-agent-1'
 
+param containerGroupName string = 'aci-azp-agent'
+
+@description('Deep dive: pass --once so the agent exits after one job and ACI restarts the container (Microsoft\'s documented option).')
+param runOnce bool = false
+
 param cpuCores int = 1
 
 param memoryInGB int = 2
 
 resource agent 'Microsoft.ContainerInstance/containerGroups@2025-09-01' = {
-  name: 'aci-azp-agent'
+  name: containerGroupName
   location: location
   tags: {
     demo: 'mdp-vs-aci-security'
@@ -58,6 +63,11 @@ resource agent 'Microsoft.ContainerInstance/containerGroups@2025-09-01' = {
         name: 'azp-agent'
         properties: {
           image: image
+          // The image's entrypoint is ./start.sh; with --once it is passed through to run.sh.
+          command: runOnce ? [
+            '/azp/start.sh'
+            '--once'
+          ] : null
           resources: {
             requests: {
               cpu: cpuCores

@@ -40,6 +40,23 @@ if ($latestRun) {
     $links += "| 5. Last successful run (fallback) | $org/$project/_build/results?buildId=$($latestRun.id)&view=results |"
 }
 $links += "| Resource group | $resourceGroup/overview |"
+if ($state['deepDive']) {
+    $mdpQueue = $state['mdpQueueId']
+    $links += @(
+        ''
+        '## Deep-dive links'
+        ''
+        '| Scene | Link |'
+        '|-------|------|'
+        "| 6. ACI --once container group: Containers | $resourceGroup/providers/Microsoft.ContainerInstance/containerGroups/aci-azp-agent-once/containers |"
+        "| 7. MDP with agent reuse: Overview | $resourceGroup/providers/Microsoft.DevOpsInfrastructure/pools/$($state['mdpStatefulPool'])/overview |"
+        "| 7. Azure Policy: Compliance | https://portal.azure.com/#@$tenant/view/Microsoft_Azure_Policy/PolicyMenuBlade/~/Compliance |"
+        "| 8. Unapproved pipeline | $org/$project/_build?definitionId=$($state['unapprovedPipelineId']) |"
+        "| 8. MDP pool: Security (pipeline permissions) | $org/$project/_settings/agentqueues?queueId=$mdpQueue&view=security |"
+        "| 9. WIF service connection | $org/$project/_settings/adminservices?resourceId=$($state['wifServiceConnectionId']) |"
+        "| 10. Organization auditing | $org/_settings/audit |"
+    )
+}
 $configDir = if ($env:AZURE_CONFIG_DIR) { "`$env:AZURE_CONFIG_DIR = '$env:AZURE_CONFIG_DIR'; " } else { '' }
 $links += @(
     ''
@@ -47,6 +64,8 @@ $links += @(
     ''
     '```powershell'
     "$($configDir)./scripts/run-probe.ps1 -ProofOfImpact   # warm-up run without the browser"
+    "$($configDir)./scripts/run-probe.ps1 -ProofOfImpact -DeepDive   # deep-dive evidence (about 10 minutes)"
+    "$($configDir)./scripts/audit-evidence.ps1   # audit events for the demo pools"
     "$($configDir)az container restart --subscription $($state.subscriptionId) -g $($state.resourceGroup) -n aci-azp-agent   # if aci-agent-1 is offline"
     "$($configDir)./scripts/teardown.ps1 -DeleteProject   # after the demo"
     '```'

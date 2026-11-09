@@ -1,4 +1,6 @@
 # Runs the same read-only security probe twice on each pool, then compares the results.
+# Core: ACI vs MDP (about 4 minutes). Deep dive adds ACI with --once, MDP with agent reuse, and a
+# deployment through a workload identity federation (WIF) service connection.
 # Queue it manually; CI and PR triggers are disabled.
 trigger: none
 pr: none
@@ -6,6 +8,10 @@ pr: none
 parameters:
 - name: proofOfImpact
   displayName: Proof of impact - make one read-only API call with any registration token a job finds
+  type: boolean
+  default: false
+- name: includeDeepDive
+  displayName: Include deep-dive variants (ACI --once, MDP agent reuse, WIF deployment) - adds several minutes
   type: boolean
   default: false
 - name: aciPool
@@ -16,6 +22,22 @@ parameters:
   displayName: Managed DevOps Pool
   type: string
   default: mdp-security-demo
+- name: aciOncePool
+  displayName: Deep dive - ACI agent pool with --once
+  type: string
+  default: aci-once-demo
+- name: mdpStatefulPool
+  displayName: Deep dive - Managed DevOps Pool with agent reuse
+  type: string
+  default: mdp-stateful-demo
+- name: wifServiceConnection
+  displayName: Deep dive - WIF service connection
+  type: string
+  default: sc-wif-demo
+- name: wifResourceGroup
+  displayName: Deep dive - resource group the WIF identity can read
+  type: string
+  default: rg-mdp-vs-aci-security
 
 stages:
 - stage: aci
@@ -38,11 +60,59 @@ stages:
       pool: ${{ parameters.mdpPool }}
       proofOfImpact: ${{ parameters.proofOfImpact }}
 
+- ${{ if eq(parameters.includeDeepDive, true) }}:
+  - stage: aci_once
+    displayName: ACI agent with --once
+    dependsOn: []
+    jobs:
+    - template: templates/probe-jobs.yml
+      parameters:
+        label: aci-once
+        pool: ${{ parameters.aciOncePool }}
+        proofOfImpact: ${{ parameters.proofOfImpact }}
+
+  - stage: mdp_stateful
+    displayName: MDP with agent reuse
+    dependsOn: []
+    jobs:
+    - template: templates/probe-jobs.yml
+      parameters:
+        label: mdp-stateful
+        pool: ${{ parameters.mdpStatefulPool }}
+        proofOfImpact: ${{ parameters.proofOfImpact }}
+
+  - stage: wif
+    displayName: Deploy with WIF on MDP
+    dependsOn: []
+    jobs:
+    - job: wif_deploy
+      displayName: WIF service connection
+      timeoutInMinutes: 30
+      pool:
+        name: ${{ parameters.mdpPool }}
+      steps:
+      - checkout: self
+      - task: AzureCLI@2
+        displayName: Sign in through the WIF service connection
+        inputs:
+          azureSubscription: ${{ parameters.wifServiceConnection }}
+          scriptType: bash
+          scriptLocation: inlineScript
+          inlineScript: bash scripts/wif-check.sh '${{ parameters.wifResourceGroup }}' inside
+      - bash: bash scripts/wif-check.sh '${{ parameters.wifResourceGroup }}' outside
+        displayName: Check what the rest of the job can reach
+      - publish: $(Build.ArtifactStagingDirectory)/wif
+        artifact: wif-result
+
 - stage: compare
   displayName: Compare findings
   dependsOn:
   - aci
   - mdp
+  - ${{ if eq(parameters.includeDeepDive, true) }}:
+    - aci_once
+    - mdp_stateful
+    - wif
   condition: succeededOrFailed()
   jobs:
   - job: compare
@@ -55,7 +125,9 @@ stages:
     steps:
     - checkout: self
     - download: current
-      patterns: '**/findings-*.json'
+      patterns: |
+        **/findings-*.json
+        **/wif-result.json
     - bash: bash scripts/compare.sh "$(Pipeline.Workspace)" "$(Build.ArtifactStagingDirectory)/comparison"
       displayName: Build comparison table
     - publish: $(Build.ArtifactStagingDirectory)/comparison

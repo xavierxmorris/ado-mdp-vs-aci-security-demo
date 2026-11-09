@@ -9,7 +9,7 @@ parameters:
   default: false
 
 jobs:
-- job: ${{ parameters.label }}_job1
+- job: ${{ replace(parameters.label, '-', '_') }}_job1
   displayName: ${{ parameters.label }} job 1
   timeoutInMinutes: 30
   pool:
@@ -21,9 +21,9 @@ jobs:
   - publish: $(Build.ArtifactStagingDirectory)/probe
     artifact: probe-${{ parameters.label }}-job1
 
-- job: ${{ parameters.label }}_job2
+- job: ${{ replace(parameters.label, '-', '_') }}_job2
   displayName: ${{ parameters.label }} job 2
-  dependsOn: ${{ parameters.label }}_job1
+  dependsOn: ${{ replace(parameters.label, '-', '_') }}_job1
   condition: succeededOrFailed()
   timeoutInMinutes: 30
   pool:
