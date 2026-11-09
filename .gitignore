@@ -1,2 +1,4 @@
 .demo-state.json
 *.zip
+rehearsal/
+*.local.md

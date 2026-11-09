@@ -2,7 +2,7 @@
 
 A live, evidence-based security comparison of self-hosted Azure Pipelines agents:
 
-- **Managed DevOps Pools (MDP)**: Microsoft's recommended managed agent pools, with a fresh VM for every job. *Measured.*
+- **Managed DevOps Pools (MDP)**: Microsoft's recommended managed agent pools, with a fresh agent for every job. *Measured.*
 - **Azure Container Instances (ACI)**: [Microsoft's documented Docker agent](https://learn.microsoft.com/azure/devops/pipelines/agents/docker), unchanged, running in ACI. *Measured.*
 - **Azure Kubernetes Service (AKS)**: the same agent image with [Microsoft's documented Kubernetes deployment](https://learn.microsoft.com/azure/devops/pipelines/agents/docker#use-azure-kubernetes-service-cluster). *Analysed, not measured:* see [AKS](#aks-analysis-not-measured).
 
@@ -36,8 +36,8 @@ What the evidence shows:
 - **Every ACI job can read the agent's registration PAT** from `/azp/.token` and from the environment of the `start.sh` process. With that PAT, a job made a read-only call that listed the organisation's 12 agent pools.
 - **ACI jobs share one machine.** Both jobs ran in the same container (same hostname and boot ID). Job 1 found a file left by the previous run, and job 2 found job 1's file.
 - **The ACI image-pull identity issues tokens to jobs.** The identity attached to the container group only for `AcrPull` returned an Azure token to a pipeline job.
-- **MDP gave each job a new VM.** Both MDP jobs reported agent name `mdp-security-demo 1`, but different hostnames and boot IDs, and neither found residue.
-- **MDP jobs have root on a disposable VM.** The job account has passwordless sudo. The VM holds no registration token or Azure identity and is discarded after the job.
+- **MDP gave each job a fresh agent.** In run 5, the two MDP jobs reported agent name `mdp-security-demo 1` but different hostnames and boot IDs. In run 15, started from the UI, both used machine `958a090ae000000` with different boot IDs. With standby agents, MDP reimages a machine from a clean image after each job, so the name can repeat; the new boot ID and the empty residue check show the agent is fresh. Full output: [results/run-15.md](results/run-15.md).
+- **MDP jobs have root on a short-lived machine.** The job account has passwordless sudo. The machine holds no registration token or Azure identity, and MDP reimages or removes it after the job.
 
 ## AKS (analysis, not measured)
 
@@ -67,8 +67,8 @@ AKS entries are *analysis* (see above); ACI and MDP entries are measured.
 | Who can read it | Every job on the agent, because jobs run as the same `agent` account as `start.sh`. `unset AZP_TOKEN` stops child processes inheriting the PAT, but `start.sh` still holds it in its own environment. | Every job on the agent, as on ACI, plus anyone who can read secrets in the namespace. | Not applicable. |
 | Platform secret protection | ACI `secureValue` hides the PAT from the Azure control plane only. | Kubernetes secrets block users without `get secrets`, not processes in the pod. | Not applicable. |
 | What a stolen registration PAT allows | It can register agents into any pool its owner administers. An attacker-controlled agent could then receive other pipelines' jobs and their secrets. *(Our analysis; the demo made one read-only call.)* | Same. | Not applicable. |
-| Isolation between jobs | Persistent agent: files from one pipeline remain for the next, including pipelines from other projects that use the pool. | Persistent Deployment: same as ACI. Per-job pods need extra tooling, such as KEDA (a community project). | Stateless: each job gets a new VM, which is discarded afterwards. |
-| Root on the agent | No (Microsoft's Dockerfile runs as `agent`), but root isn't needed to read the PAT. | No (same image); root isn't needed to read the PAT. | Yes, passwordless sudo, on a VM that holds no reusable secret and lasts one job. |
+| Isolation between jobs | Persistent agent: files from one pipeline remain for the next, including pipelines from other projects that use the pool. | Persistent Deployment: same as ACI. Per-job pods need extra tooling, such as KEDA (a community project). | Stateless (*Fresh agent every time*): each job gets a fresh agent. With standby agents, MDP reimages the machine after the job; without them, it shuts the machine down and removes it. |
+| Root on the agent | No (Microsoft's Dockerfile runs as `agent`), but root isn't needed to read the PAT. | No (same image); root isn't needed to read the PAT. | Yes, passwordless sudo, on a machine that holds no reusable secret and is reimaged or removed after one job. |
 | Azure identities | Any identity on the container group, even one used only for image pulls, issues tokens to jobs. | By default every pod can reach IMDS, so jobs can request the node's identity tokens. Blocking this is in preview. | The demo pool has no identity. If you add one, jobs can use it too, so prefer workload identity federation service connections. |
 | Image patching | You build, patch and rebuild the image. The agent downloads itself at start-up by using the PAT. | You patch the image and upgrade the nodes and cluster. | Microsoft-maintained Azure Pipelines images (or your own gallery images), with optional version pinning. |
 | Container builds | No Docker daemon in ACI. | No Docker on AKS 1.19 or later; Microsoft's example still mounts `docker.sock` from the node, which should be removed. | Docker is available on the VM. |
@@ -120,7 +120,7 @@ az login --tenant <tenant-id>
 
 - `deploy.ps1` is safe to re-run. It uses Microsoft Entra tokens from the Azure CLI for Azure DevOps, so you need no PAT to run it.
 - `-ProofOfImpact` lets a probe job make **one read-only** API call (list agent pools) with any registration token it finds. Leave it off for a purely passive run.
-- For a live walkthrough, see [RUN-SHEET.md](RUN-SHEET.md).
+- For a live walkthrough, see [RUN-SHEET.md](RUN-SHEET.md). `./scripts/demo-links.ps1` writes your deployment's direct links to `DEMO-LINKS.local.md` (git-ignored).
 
 ## Cost
 
@@ -133,10 +133,10 @@ Run `teardown.ps1` after the demo.
 
 ## Honesty notes
 
-- **Scope of the evidence.** Measured on 9 November 2026 in one demo tenant in Australia East. Pipeline runs 3 to 5 showed the same exposures; [results/run-5.md](results/run-5.md) has the full output of run 5. An earlier probe version checked only PID 1 and the agent listener, so it missed the PAT in `start.sh`'s environment. In ACI, PID 1 is the `pause` process.
+- **Scope of the evidence.** Measured on 9 November 2026 in one demo tenant in Australia East. Pipeline runs 3 to 5, and run 15 started from the Azure DevOps UI, showed the same exposures. [results/run-5.md](results/run-5.md) and [results/run-15.md](results/run-15.md) have the full output. An earlier probe version checked only PID 1 and the agent listener, so it missed the PAT in `start.sh`'s environment. In ACI, PID 1 is the `pause` process.
 - **The ACI side is Microsoft's documented container agent, unchanged, using a PAT.** Not tested: service principal registration, `--once` with automatic replacement, VNet injection, and Windows agents. A hardened custom design could reduce some exposures, but a registration credential must still reach the container. *(Our analysis.)*
 - **AKS wasn't measured.** The subscription blocks public IP addresses, so the cluster couldn't be created, and we didn't register the subscription-wide exception. The AKS entries are analysis based on Microsoft's documentation and the shared image; the probe hasn't confirmed them.
-- **MDP isn't safe in every respect.** Jobs get root on the VM and can read the agent's own session credentials while the job runs. The protection comes from stateless VMs that hold no reusable secret.
+- **MDP isn't safe in every respect.** Jobs get root on the machine and can read the agent's own session credentials while the job runs. The protection comes from stateless agents that hold no reusable secret and are reimaged or removed after each job.
 - **The proof of impact made one read-only call.** "Listed 12 agent pools" is the count that call returned. The demo never used the PAT to change anything.
 - **The ACI identity in this demo has only `AcrPull`** on the demo registry. The finding is about reachability: any role granted to that identity is available to every job.
 - **The probe never outputs secret values.** A local test with a fake token confirmed that values don't appear in logs or artifacts.
@@ -149,7 +149,7 @@ Run `teardown.ps1` after the demo.
 agent/        Microsoft's documented Dockerfile and start.sh (unchanged apart from an attribution header)
 infra/        main.bicep (Dev Center, MDP pool, registry, identity) and aci.bicep (ACI agent)
 pipelines/    security-probe.yml and the two-job probe template
-scripts/      probe.sh, compare.sh, deploy.ps1, run-probe.ps1, teardown.ps1, common.ps1
+scripts/      probe.sh, compare.sh, deploy.ps1, run-probe.ps1, teardown.ps1, demo-links.ps1, common.ps1
 results/      Comparison tables from real runs
 ```
 
