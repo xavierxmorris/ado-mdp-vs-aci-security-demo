@@ -1,4 +1,4 @@
-# Runs the same read-only security probe twice on each pool, then compares the results.
+# Runs the same read-only security probe twice on each pool (ACI, AKS and MDP), then compares the results.
 # Queue it manually; CI and PR triggers are disabled.
 trigger: none
 pr: none
@@ -12,6 +12,14 @@ parameters:
   displayName: ACI self-hosted agent pool
   type: string
   default: aci-selfhosted-demo
+- name: includeAks
+  displayName: Include the AKS self-hosted agent
+  type: boolean
+  default: true
+- name: aksPool
+  displayName: AKS self-hosted agent pool
+  type: string
+  default: aks-selfhosted-demo
 - name: mdpPool
   displayName: Managed DevOps Pool
   type: string
@@ -28,6 +36,17 @@ stages:
       pool: ${{ parameters.aciPool }}
       proofOfImpact: ${{ parameters.proofOfImpact }}
 
+- ${{ if eq(parameters.includeAks, true) }}:
+  - stage: aks
+    displayName: AKS self-hosted agent
+    dependsOn: []
+    jobs:
+    - template: templates/probe-jobs.yml
+      parameters:
+        label: aks
+        pool: ${{ parameters.aksPool }}
+        proofOfImpact: ${{ parameters.proofOfImpact }}
+
 - stage: mdp
   displayName: Managed DevOps Pool
   dependsOn: []
@@ -43,6 +62,8 @@ stages:
   dependsOn:
   - aci
   - mdp
+  - ${{ if eq(parameters.includeAks, true) }}:
+    - aks
   condition: succeededOrFailed()
   jobs:
   - job: compare
