@@ -33,18 +33,20 @@ for candidate in "${agent_home:+$agent_home/.token}" /azp/.token; do
   case " ${token_files[*]} " in *" $resolved "*) ;; *) token_files+=("$resolved") ;; esac
 done
 
-# 2. Registration secrets still in the environment of the container entrypoint (PID 1) or the
-#    agent listener. Only exact variable NAMES are matched and reported; values are never output.
+# 2. Registration secrets still present in the environment of any process this job can inspect
+#    (for example the container entrypoint). Only exact variable NAMES are reported, never values.
 secret_env=()
+readable_environs=0
 for proc in /proc/[0-9]*; do
-  pid="${proc#/proc/}"
-  comm="$(cat "$proc/comm" 2>/dev/null || true)"
-  [ "$pid" = "1" ] || [ "$comm" = "Agent.Listener" ] || continue
   [ -r "$proc/environ" ] || continue
+  readable_environs=$((readable_environs + 1))
+  comm="$(cat "$proc/comm" 2>/dev/null || true)"
   while IFS= read -r name; do
-    secret_env+=("$name in pid $pid ($comm)")
+    entry="$name in $comm"
+    case " ${secret_env[*]} " in *" $entry "*) ;; *) secret_env+=("$entry") ;; esac
   done < <(tr '\0' '\n' < "$proc/environ" 2>/dev/null | cut -d= -f1 | grep -E '^(AZP_TOKEN|AZP_CLIENTSECRET)$' || true)
 done
+pid1="$(cat /proc/1/comm 2>/dev/null || printf '?')"
 
 # 3. The agent's own session credentials (every self-hosted agent has them).
 agent_creds=()
@@ -52,7 +54,8 @@ for f in .credentials .credentials_rsaparams; do
   [ -n "$agent_home" ] && [ -r "$agent_home/$f" ] && agent_creds+=("$f")
 done
 
-# 4. Residue left on this machine by an earlier job.
+# 4. Residue left on this machine by an earlier job. The boot ID shows whether jobs shared a machine.
+machine="$(hostname 2>/dev/null || printf '?'), boot $(cut -c1-8 /proc/sys/kernel/random/boot_id 2>/dev/null || printf '?')"
 if [ -f "$marker" ]; then
   residue="yes: $(head -n 1 "$marker" | cut -c1-160)"
 else
@@ -120,7 +123,8 @@ jq -n \
   --arg pool "$label" --arg job "$job" --arg agent "${AGENT_NAME:-?}" --arg user "$run_user" \
   --arg tokenFiles "$(list "${token_files[@]}")" \
   --arg secretEnv "$(list "${secret_env[@]}")" \
-  --arg agentCreds "$(list "${agent_creds[@]}")" \
+  --arg envScope "checked $readable_environs readable process environments; PID 1 is $pid1" \
+  --arg agentCreds "$(list "${agent_creds[@]}")" --arg machine "$machine" \
   --arg residue "$residue" --arg identity "$identity" --arg root "$root" \
   --arg image "$image" --arg docker "$docker_ok" --arg impact "$impact" '
   def flag(exposed): if exposed then "exposed" else "clear" end;
@@ -128,10 +132,11 @@ jq -n \
     pool: $pool, job: $job, agent: $agent, user: $user,
     checks: [
       {id: "token_file", name: "Registration token readable on disk", value: $tokenFiles, status: flag($tokenFiles != "none")},
-      {id: "secret_env", name: "Registration secret in agent process environment", value: $secretEnv, status: flag($secretEnv != "none")},
+      {id: "secret_env", name: "Registration secret in a process environment", value: ($secretEnv + " (" + $envScope + ")"), status: flag($secretEnv != "none")},
       {id: "impact", name: "Registration token usable from the job (read-only proof)", value: $impact,
        status: (if $impact == "not attempted" then "info" else flag($impact | startswith("yes")) end)},
       {id: "residue", name: "Residue from an earlier job", value: $residue, status: flag($residue | startswith("yes"))},
+      {id: "machine", name: "Machine (hostname, boot ID)", value: $machine, status: "info"},
       {id: "identity", name: "Azure managed identity token obtainable", value: $identity, status: flag($identity | startswith("yes"))},
       {id: "agent_creds", name: "Agent session credential files readable", value: $agentCreds, status: "info"},
       {id: "root", name: "Root access for the job", value: $root, status: "info"},
