@@ -195,25 +195,30 @@ foreach ($namespace in $namespaces) {
     }
 }
 
-$mdpSkus = @($MdpSku) + $(if ($deepDive) { @($mdpStatefulSku) } else { @() })
-Write-Step "Managed DevOps Pools quota in $Location for $($mdpSkus -join ', ')"
+# Pools that already exist hold their own agents' cores, so only a new pool needs free quota.
+$existingPools = @(az resource list --subscription $SubscriptionId --resource-group $ResourceGroup `
+        --resource-type Microsoft.DevOpsInfrastructure/pools --query '[].name' -o tsv 2>$null)
+$mdpPools = @([pscustomobject]@{ Name = $MdpPoolName; Sku = $MdpSku })
+if ($deepDive) { $mdpPools += [pscustomobject]@{ Name = $MdpStatefulPoolName; Sku = $mdpStatefulSku } }
+Write-Step "Managed DevOps Pools quota in $Location for $(($mdpPools | ForEach-Object Sku | Select-Object -Unique) -join ', ')"
 $usages = Invoke-AzCli rest --method get -o json `
     --url "https://management.azure.com/subscriptions/$SubscriptionId/providers/Microsoft.DevOpsInfrastructure/locations/$Location/usages?api-version=2024-04-04-preview" |
     ConvertFrom-Json
-foreach ($sku in $mdpSkus) {
+foreach ($mdp in $mdpPools) {
     # Standard_D2ads_v5 -> standardDADSv5Family (2 cores); Standard_E2as_v4 -> standardEASv4Family.
-    if ($sku -match '^Standard_([A-Z]+)(\d+)([a-z]*)_v(\d+)$') {
+    if ($mdp.Sku -match '^Standard_([A-Z]+)(\d+)([a-z]*)_v(\d+)$') {
         $familyName = 'standard' + $Matches[1] + $Matches[3].ToUpperInvariant() + 'v' + $Matches[4] + 'Family'
         $coresPerAgent = [int]$Matches[2]
         $family = $usages.value | Where-Object { $_.name.value -eq $familyName }
-        if ($family) {
-            $free = $family.limit - $family.currentValue
-            # On a re-run, this demo's own agents are already counted as used.
-            Write-Host "${familyName}: $($family.currentValue) of $($family.limit) cores used ($free free, $coresPerAgent per agent)"
-            if ($free -lt $coresPerAgent) { Write-Warning "No free $familyName quota: new MDP agents will wait. Choose another -MdpSku or request quota." }
-            elseif ($sku -eq $MdpSku -and $free -lt 2 * $coresPerAgent) { Write-Warning 'Not enough free cores for 2 concurrent agents.' }
+        if (-not $family) { Write-Warning "No MDP quota entry for $familyName in $Location. Check the SKU, or request quota."; continue }
+        $free = $family.limit - $family.currentValue
+        if ($existingPools -contains $mdp.Name) {
+            Write-Host "${familyName}: $($family.currentValue) of $($family.limit) cores used, including existing pool $($mdp.Name)"
+            continue
         }
-        else { Write-Warning "No MDP quota entry for $familyName in $Location. Check the SKU, or request quota." }
+        Write-Host "${familyName}: $($family.currentValue) of $($family.limit) cores used ($free free, $coresPerAgent per agent)"
+        if ($free -lt $coresPerAgent) { Write-Warning "No free $familyName quota for $($mdp.Name): its jobs will wait. Choose another -MdpSku or request quota." }
+        elseif ($mdp.Name -eq $MdpPoolName -and $free -lt 2 * $coresPerAgent) { Write-Warning 'Not enough free cores for 2 concurrent agents.' }
     }
 }
 
