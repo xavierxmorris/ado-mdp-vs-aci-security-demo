@@ -20,6 +20,8 @@ $mdpPool = (Invoke-Ado -Uri "$org/_apis/distributedtask/pools?poolName=$([uri]::
 $latestRun = (Invoke-Ado -Uri "$org/$project/_apis/pipelines/$($state.pipelineId)/runs?api-version=7.1").value |
     Where-Object { $_.result -eq 'succeeded' } | Select-Object -First 1
 $resourceGroup = "https://portal.azure.com/#@$tenant/resource/subscriptions/$($state.subscriptionId)/resourceGroups/$($state.resourceGroup)"
+# With -MdpPoolAlias, the Azure resource name differs from the Azure DevOps pool name.
+$mdpResource = if ($state['mdpPoolResource']) { $state.mdpPoolResource } else { $state.mdpPool }
 
 $links = @(
     '# Demo links (generated; do not commit)'
@@ -33,7 +35,7 @@ $links = @(
     "| 1. MDP pool: Jobs tab | $org/_settings/agentpools?poolId=$($mdpPool.id)&view=jobs |"
     "| 1. Project agent pools | $org/$project/_settings/agentqueues |"
     "| 2. ACI container group: Containers | $resourceGroup/providers/Microsoft.ContainerInstance/containerGroups/aci-azp-agent/containers |"
-    "| 3. MDP pool: Overview | $resourceGroup/providers/Microsoft.DevOpsInfrastructure/pools/$($state.mdpPool)/overview |"
+    "| 3. MDP pool: Overview | $resourceGroup/providers/Microsoft.DevOpsInfrastructure/pools/$mdpResource/overview |"
     "| 4. Pipeline (Run pipeline) | $org/$project/_build?definitionId=$($state.pipelineId) |"
 )
 if ($latestRun) {

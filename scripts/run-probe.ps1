@@ -51,7 +51,8 @@ try {
     Invoke-WebRequest -Uri $artifact.resource.downloadUrl -Headers (Get-AdoHeaders) -OutFile $zip
     Expand-Archive -Path $zip -DestinationPath $work
     $comparison = Get-ChildItem -Path $work -Recurse -Filter comparison.md | Select-Object -First 1
-    $destination = Join-Path $script:RepoRoot "results/run-$($run.id).md"
+    # Run IDs are per organisation, so the file name includes the organisation.
+    $destination = Join-Path $script:RepoRoot "results/run-$($run.id)-$($state.organization).md"
     Copy-Item -Path $comparison.FullName -Destination $destination -Force
 } finally {
     Remove-Item -Path $work -Recurse -Force -ErrorAction SilentlyContinue
