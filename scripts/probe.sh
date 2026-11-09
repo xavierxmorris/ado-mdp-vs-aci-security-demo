@@ -71,13 +71,14 @@ case "$mi_code" in
   *) identity="no (HTTP $mi_code)" ;;
 esac
 
-# 6. Root on the machine.
+# 6. Root on the machine, and the account jobs run as.
+run_user="$(id -un)"
 if [ "$(id -u)" = "0" ]; then
   root="yes (job runs as root)"
 elif command -v sudo >/dev/null 2>&1 && sudo -n true >/dev/null 2>&1; then
-  root="yes (passwordless sudo)"
+  root="yes (passwordless sudo for $run_user)"
 else
-  root="no"
+  root="no (job runs as $run_user)"
 fi
 
 # 7. Who maintains and patches the image.
@@ -116,7 +117,7 @@ fi
 
 findings="$out_dir/findings-$label-$job.json"
 jq -n \
-  --arg pool "$label" --arg job "$job" --arg agent "${AGENT_NAME:-?}" --arg user "$(id -un)" \
+  --arg pool "$label" --arg job "$job" --arg agent "${AGENT_NAME:-?}" --arg user "$run_user" \
   --arg tokenFiles "$(list "${token_files[@]}")" \
   --arg secretEnv "$(list "${secret_env[@]}")" \
   --arg agentCreds "$(list "${agent_creds[@]}")" \
